@@ -52,6 +52,69 @@ def get_isp_from_ip(ip: str) -> str:
     except Exception:
         return 'ISP info unavailable'
 
+def traceroute(destination: str, max_hops: int = 30) -> List[Dict]:
+    """
+    Perform a traceroute to a destination and return hop information.
+    
+    Args:
+        destination (str): The target hostname or IP address.
+        max_hops (int): Maximum number of hops to trace (default: 30).
+    
+    Returns:
+        List[Dict]: List of hop information containing hop number, IP, and hostname.
+    """
+    os_type = platform.system().lower()
+    hops = []
+    
+    try:
+        if os_type == 'windows':
+            cmd = ['tracert', '-h', str(max_hops), destination]
+        else:
+            cmd = ['traceroute', '-m', str(max_hops), destination]
+        
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Parse hop information
+            hop_data = {'raw': line}
+            
+            if os_type == 'windows':
+                # Windows tracert format: "1    <1 ms    <1 ms    <1 ms    example.com [192.168.1.1]"
+                parts = line.split()
+                if parts and parts[0].isdigit():
+                    hop_data['hop'] = int(parts[0])
+                    # Try to extract IP and hostname
+                    for part in parts:
+                        if '[' in part and ']' in part:
+                            hop_data['ip'] = part.strip('[]')
+                        elif '.' in part and all(c.isdigit() or c == '.' for c in part):
+                            hop_data['ip'] = part
+            else:
+                # Unix traceroute format: "1  router.local (192.168.1.1)  1.234 ms  1.456 ms  1.789 ms"
+                parts = line.split()
+                if parts and parts[0].isdigit():
+                    hop_data['hop'] = int(parts[0])
+                    if len(parts) > 1:
+                        hop_data['host'] = parts[1]
+                    # Extract IP from parentheses
+                    if '(' in line and ')' in line:
+                        start = line.index('(') + 1
+                        end = line.index(')')
+                        hop_data['ip'] = line[start:end]
+            
+            hops.append(hop_data)
+        
+        process.wait()
+    
+    except Exception as e:
+        return [{'error': f"Error running traceroute: {e}"}]
+    
+    return hops
+
 def do_traceroute(destination='cyberkit.it') -> str:
     """Perform traceroute (Windows: tracert, Others: traceroute)."""
     os_type = platform.system().lower()
@@ -187,44 +250,148 @@ def get_connections_outside_ports_80_https(max_count=100) -> List[str]:
     return connections[:max_count]
 
 def get_ipconfig_all() -> str:
-    """Execute 'ipconfig /all' (Windows) or equivalent network config command 
-    and return its output.
+    """
+    Generate detailed network configuration output similar to 'ipconfig /all'.
+    Works cross-platform and returns comprehensive network interface information.
     
     Returns:
-        str: The raw output of the network config command, or an error message if failed.
+        str: Formatted network configuration details.
     """
     os_type = platform.system().lower()
+    output = []
     
     try:
-        if os_type == 'windows':
-            # Windows: ipconfig /all
-            output_bytes = subprocess.check_output(
-                ['ipconfig', '/all'],
-                stderr=subprocess.PIPE,
-                text=False  # Read as bytes first
-            )
-            output = output_bytes.decode('utf-8', errors='replace')  # Decode with utf-8, replace invalid chars
+        # Get all network interfaces
+        import netifaces
         
-        elif os_type == 'linux' or os_type == 'darwin':
-            # Linux/macOS: Use 'ip addr show up'
-            output_bytes = subprocess.check_output(
-                ['ip', 'addr', 'show', 'up'],
-                stderr=subprocess.PIPE,
-                text=False
-            )
-            output = output_bytes.decode('utf-8', errors='replace')
+        output.append("\n" + "=" * 70)
+        output.append("Network Configuration - All Adapters")
+        output.append("=" * 70 + "\n")
         
+        interfaces = netifaces.interfaces()
+        
+        for iface in interfaces:
+            output.append(f"\nAdapter: {iface}")
+            output.append("-" * 70)
+            
+            try:
+                addr_info = netifaces.ifaddresses(iface)
+                
+                # MAC Address (Link layer)
+                if netifaces.AF_LINK in addr_info:
+                    mac_info = addr_info[netifaces.AF_LINK][0]
+                    output.append(f"  MAC Address: {mac_info.get('addr', 'N/A')}")
+                
+                # IPv4 Information
+                if netifaces.AF_INET in addr_info:
+                    for ipv4 in addr_info[netifaces.AF_INET]:
+                        output.append(f"\n  IPv4 Address: {ipv4.get('addr', 'N/A')}")
+                        output.append(f"  Subnet Mask: {ipv4.get('netmask', 'N/A')}")
+                        if 'broadcast' in ipv4:
+                            output.append(f"  Broadcast Address: {ipv4.get('broadcast', 'N/A')}")
+                else:
+                    output.append(f"  IPv4 Address: (No IPv4 configured)")
+                
+                # IPv6 Information
+                if netifaces.AF_INET6 in addr_info:
+                    for ipv6 in addr_info[netifaces.AF_INET6]:
+                        ipv6_addr = ipv6.get('addr', 'N/A')
+                        # Remove scope ID if present
+                        if '%' in ipv6_addr:
+                            ipv6_addr = ipv6_addr.split('%')[0]
+                        output.append(f"\n  IPv6 Address: {ipv6_addr}")
+                        output.append(f"  IPv6 Netmask: {ipv6.get('netmask', 'N/A')}")
+                
+            except Exception as e:
+                output.append(f"  Error reading interface info: {e}")
+        
+        # Gateway information
+        output.append("\n" + "=" * 70)
+        output.append("Gateway Information")
+        output.append("=" * 70)
+        
+        gateways = netifaces.gateways()
+        if gateways.get('default'):
+            for af, (gateway, iface) in gateways.get('default', {}).items():
+                if af == netifaces.AF_INET:
+                    output.append(f"Default Gateway (IPv4): {gateway} (via {iface})")
+                elif af == netifaces.AF_INET6:
+                    output.append(f"Default Gateway (IPv6): {gateway} (via {iface})")
+        
+        # DNS Information
+        output.append("\n" + "=" * 70)
+        output.append("DNS Server Information")
+        output.append("=" * 70)
+        
+        dns_servers = get_dns_servers()
+        if dns_servers and dns_servers[0] != 'DNS info unavailable (Win11)' and dns_servers[0] != 'DNS info unavailable (macOS/Linux)':
+            for i, dns in enumerate(dns_servers, 1):
+                output.append(f"DNS Server {i}: {dns}")
         else:
-            raise OSError("Unsupported OS for network config command.")
+            output.append("DNS Servers: Could not retrieve")
         
-        return output
+        output.append("\n" + "=" * 70 + "\n")
+        
+        return "\n".join(output)
+    
+    except ImportError:
+        # Fallback if netifaces is not installed
+        return get_ipconfig_all_fallback()
+
+def get_ipconfig_all_fallback() -> str:
+    """
+    Fallback function when netifaces is not available.
+    Uses system commands to gather network information.
+    """
+    os_type = platform.system().lower()
+    output = []
+    
+    try:
+        output.append("\n" + "=" * 70)
+        output.append("Network Configuration - All Adapters (System Command)")
+        output.append("=" * 70 + "\n")
+        
+        if os_type == 'windows':
+            result = subprocess.check_output(['ipconfig', '/all'], stderr=subprocess.DEVNULL, text=False)
+            output.append(result.decode('utf-8', errors='replace'))
+        
+        elif os_type == 'darwin':
+            # macOS
+            result = subprocess.check_output(['ifconfig'], stderr=subprocess.DEVNULL, text=False)
+            output.append(result.decode('utf-8', errors='replace'))
+        
+        elif os_type == 'linux':
+            # Linux - try multiple commands
+            try:
+                result = subprocess.check_output(['ip', 'addr', 'show'], stderr=subprocess.DEVNULL, text=False)
+                output.append("=== IP Address Configuration ===\n")
+                output.append(result.decode('utf-8', errors='replace'))
+            except:
+                pass
+            
+            try:
+                result = subprocess.check_output(['ip', 'route', 'show'], stderr=subprocess.DEVNULL, text=False)
+                output.append("\n=== Routing Information ===\n")
+                output.append(result.decode('utf-8', errors='replace'))
+            except:
+                pass
+            
+            try:
+                result = subprocess.check_output(['cat', '/etc/resolv.conf'], stderr=subprocess.DEVNULL, text=False)
+                output.append("\n=== DNS Configuration ===\n")
+                output.append(result.decode('utf-8', errors='replace'))
+            except:
+                pass
+        
+        output.append("\n" + "=" * 70 + "\n")
+        return "\n".join(output)
     
     except Exception as e:
-        return f"Failed to execute network config command: {e}"
+        return f"Failed to retrieve network configuration: {e}"
 
 def main():
     print("")
-    print("=== Pnet v1.1 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
+    print("=== Pnet v1.2 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
     print("List some infos on your connections")
     print("")
     print("=== Network Information ===")
@@ -281,3 +448,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    print("")
+    print("=== Pnet v1.2 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
+    print("List some infos on your connections")
+    print("")
+    print("=== Network Information ===")
