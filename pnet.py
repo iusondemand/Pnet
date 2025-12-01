@@ -116,12 +116,16 @@ def traceroute(destination: str, max_hops: int = 30) -> List[Dict]:
     return hops
 
 def do_traceroute(destination='cyberkit.it') -> str:
-    """Perform traceroute (Windows: tracert, Others: traceroute)."""
+    """Perform traceroute (Windows: tracert, Others: traceroute or tracepath)."""
     os_type = platform.system().lower()
-    cmd = ['traceroute'] if os_type != 'windows' else ['tracert']
-    cmd.extend([destination])
-    
     result = ""
+    
+    if os_type == 'windows':
+        cmd = ['tracert', destination]
+    else:
+        # Try traceroute first, fall back to tracepath if not found
+        cmd = ['traceroute', destination]
+    
     try:
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         while True:
@@ -130,8 +134,37 @@ def do_traceroute(destination='cyberkit.it') -> str:
                 break
             result += line
         process.wait()
+        
+        # If traceroute failed on Unix, try tracepath
+        if not result and os_type != 'windows':
+            cmd = ['tracepath', destination]
+            try:
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                while True:
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+                    result += line
+                process.wait()
+            except Exception:
+                result = "Error: Neither traceroute nor tracepath found"
+    
     except Exception as e:
-        result = f"Error running traceroute: {e}"
+        # Try tracepath as fallback on Unix
+        if os_type != 'windows':
+            try:
+                cmd = ['tracepath', destination]
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                while True:
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+                    result += line
+                process.wait()
+            except Exception:
+                result = f"Error running traceroute/tracepath: {e}"
+        else:
+            result = f"Error running tracert: {e}"
     
     return result.strip()
 
@@ -391,7 +424,7 @@ def get_ipconfig_all_fallback() -> str:
 
 def main():
     print("")
-    print("=== Pnet v1.2 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
+    print("=== Pnet v1.3 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
     print("List some infos on your connections")
     print("")
     print("=== Network Information ===")
@@ -450,7 +483,7 @@ if __name__ == "__main__":
     main()
     
     print("")
-    print("=== Pnet v1.2 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
+    print("=== Pnet v1.3 - @IusOnDemand srl 2025 - GPL => 3.0 ===")
     print("List some infos on your connections")
     print("")
     print("=== Network Information ===")
